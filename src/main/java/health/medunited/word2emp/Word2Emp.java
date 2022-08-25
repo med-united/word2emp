@@ -14,11 +14,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
+import java.util.GregorianCalendar;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.JAXBException;
+import javax.xml.datatype.DatatypeFactory;
 
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.extractor.WordExtractor;
@@ -28,6 +31,7 @@ import org.apache.poi.hwpf.usermodel.Table;
 import org.apache.poi.hwpf.usermodel.TableRow;
 
 import health.medunited.bmp.Block;
+import health.medunited.bmp.Ersteller;
 import health.medunited.bmp.Medikation;
 import health.medunited.bmp.MedikationsPlan;
 import health.medunited.bmp.Patient;
@@ -42,6 +46,26 @@ public class Word2Emp {
                 HWPFDocument document=new HWPFDocument(new FileInputStream(entry.toFile()));
 
                 MedikationsPlan medikationsPlan = new MedikationsPlan();
+                medikationsPlan.setVersionsnummer("026");
+                medikationsPlan.setLccs("ISO 3166-1");
+                medikationsPlan.setInstanzId(UUID.randomUUID().toString().replaceAll("-", "").toUpperCase());
+                medikationsPlan.setSprachLaenderkennzeichen("de-DE");
+                medikationsPlan.setSo("eGK");
+                medikationsPlan.setLlcs("ISO 639-1");
+                medikationsPlan.setIv("1.6");
+                medikationsPlan.setOid("1.2.276.0.76.7.7");
+                medikationsPlan.setOn("eMP/AMTS");
+
+                Ersteller ersteller = new Ersteller();
+                ersteller.setName("Manuel Blechschmidt");
+                ersteller.setEMail("manuel.blechschmidt@incentergy.de");
+                ersteller.setStrasse("Achenseeweg 50");
+                ersteller.setTelefon("01736322621");
+                ersteller.setPostleitzahl("12209");
+                ersteller.setOrt("Berlin");
+                ersteller.setErstelldatum(DatatypeFactory.newDefaultInstance().newXMLGregorianCalendar(new GregorianCalendar()));
+                medikationsPlan.setErsteller(ersteller);
+
                 Patient patient = new Patient();
                 medikationsPlan.setPatient(patient);
                 document.getTextTable().getText();
@@ -55,27 +79,42 @@ public class Word2Emp {
                 if(m.matches()) {
                     patient.setVorname(m.group(2));
                     patient.setNachname(m.group(1));
-                    patient.setGeburtsdatum(df.format(Integer.parseInt(m.group(5)))+"-"+df.format(Integer.parseInt(m.group(4)))+"-"+m.group(3));
+                    patient.setGeburtsdatum(df.format(Integer.parseInt(m.group(5)))+df.format(Integer.parseInt(m.group(4)))+m.group(3));
                 }
+                patient.setGeschlecht("X");
+                patient.setSd(false);
+                patient.setVersichertenId("A000000000");
 
                 Range range = document.getRange();
                 int numParagraphs = range.numParagraphs();
-
-                for(int i =0;i<numParagraphs;i++) {
+                Table t = null;
+                for(int i=0;i<numParagraphs;i++) {
                     Paragraph p = range.getParagraph(i);
                     if(p.isInTable()) {
-                        Table t = range.getTable(p);
-                        extractTableDauermedikationDataIntoMedicationPlan(t, medikationsPlan);
+                        t = range.getTable(p);
+                        extractTableDataIntoMedicationPlan(t, medikationsPlan, "Dauermedikation");
                         break;
                     }
                 }
+                if(t != null) {
+                    for(int i=t.getEndOffset();i<numParagraphs;i++) {
+                        Paragraph p = range.getParagraph(i);
+                        if(p.isInTable()) {
+                            t = range.getTable(p);
+                            extractTableDataIntoMedicationPlan(t, medikationsPlan, "Bedarfsmedikation");
+                            break;
+                        }
+                    }
+                }
+
+
 
                 extractor.close();
                 ByteArrayOutputStream stream = new ByteArrayOutputStream();
                 JAXBContext.newInstance(MedikationsPlan.class).createMarshaller().marshal(medikationsPlan, stream);
                 
                 String s = new String(stream.toByteArray());
-                // Files.write(Paths.get("Request.dat"), s.getBytes());
+                Files.write(Paths.get(patient.getNachname()+"-"+patient.getVorname()+".xml"), s.getBytes());
                 // System.out.println(s);
                 HttpClient client = HttpClient.newBuilder().build();
                 HttpRequest request = HttpRequest.newBuilder()
@@ -94,9 +133,9 @@ public class Word2Emp {
             e.printStackTrace();
         }
     }
-    private static void extractTableDauermedikationDataIntoMedicationPlan(Table t, MedikationsPlan medikationsPlan) {
+    private static void extractTableDataIntoMedicationPlan(Table t, MedikationsPlan medikationsPlan, String blockName) {
         Block dauermedikation = new Block();
-        dauermedikation.setZwischenueberschriftFreitext("Dauermedikation");
+        dauermedikation.setZwischenueberschriftFreitext(blockName);
         medikationsPlan.getBlock().add(dauermedikation);
         for(int i = 0;i<t.numRows();i++) {
             if(i==0) {
