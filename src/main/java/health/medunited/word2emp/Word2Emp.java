@@ -6,12 +6,16 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.StringReader;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.charset.Charset;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,7 +27,9 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -36,6 +42,7 @@ import javax.xml.bind.Marshaller;
 import javax.xml.datatype.DatatypeFactory;
 import javax.xml.datatype.XMLGregorianCalendar;
 
+import org.apache.poi.EncryptedDocumentException;
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.extractor.WordExtractor;
 import org.apache.poi.hwpf.usermodel.Paragraph;
@@ -46,6 +53,9 @@ import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.CreationHelper;
 import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
@@ -55,9 +65,14 @@ import health.medunited.bmp.MeTyp;
 import health.medunited.bmp.Medikation;
 import health.medunited.bmp.MedikationsPlan;
 import health.medunited.bmp.Patient;
+import jakarta.json.Json;
+import jakarta.json.JsonArray;
+import jakarta.json.JsonObject;
 
 public class Word2Emp {
 	
+	private static final String SECRET_MEDICATIONS_PLANS_MEDIKAMENTE_UND_WIRKSTOFFE_ZU_PZN_XLSX = "../secret-medications-plans/Medikamente_und_Wirkstoffe_Zu_PZN.xlsx";
+
 	private static Logger log = Logger.getLogger(Word2Emp.class.getName());
 
     private static final Pattern NAME_PATTERN = Pattern.compile("Name, Vorname:.(.*), (.*).Geburtsdatum:.(\\d?\\d)\\.(\\d?\\d)\\.(\\d\\d\\d\\d).Seite:.*", Pattern.DOTALL);
@@ -65,6 +80,30 @@ public class Word2Emp {
     private static final SimpleDateFormat GERMAN_DATE_FORMAT = new SimpleDateFormat("dd.MM.yyyy");
     private static final SimpleDateFormat GERMAN_DATE_FORMAT_SHORT = new SimpleDateFormat("dd.MM.yy");
     private static final SimpleDateFormat MEDIKATIONSPLAN_DATE_FORMAT = new SimpleDateFormat("yyyyMMdd");
+    static Workbook medication2pznWorkbook;
+    static Sheet medication2pznSheet;
+    static Map<String, String> medicationText2PZN = new HashMap<String,String>();
+    static Map<String, Integer> medicationText2Row = new HashMap<String,Integer>();
+    
+    static {
+    	InputStream inp;
+		try {
+			inp = new FileInputStream(SECRET_MEDICATIONS_PLANS_MEDIKAMENTE_UND_WIRKSTOFFE_ZU_PZN_XLSX);
+			medication2pznWorkbook = WorkbookFactory.create(inp);
+			medication2pznSheet = medication2pznWorkbook.getSheetAt(0);
+			int rowsCount = medication2pznSheet.getLastRowNum();
+            for (int i = 0; i <= rowsCount; i++) {
+                Row row = medication2pznSheet.getRow(i);
+                Cell cell = row.getCell(0);
+                Cell cell2 = row.getCell(1);
+                medicationText2PZN.put(cell.getStringCellValue(), cell2 != null ? cell2.getStringCellValue() : null);
+                medicationText2Row.put(cell.getStringCellValue(), i);
+            }
+		} catch (IOException | EncryptedDocumentException e) {
+			log.log(Level.SEVERE, "Could not open Medikament zu Wirkstoff Excel", e);
+		}
+    	
+    }
 
     public static void main(String[] args) {
         List<MedikationsPlan> medikationsPlaene = new ArrayList<>();
@@ -80,11 +119,11 @@ public class Word2Emp {
 	        		String s = medikationsPlan2XmlString(medikationsPlan);
 	        		
 					Files.write(Paths.get(fileNameWithouSuffix+".xml"), s.getBytes());
-	        		// log.info(s);
+	        		log.info(s);
 	        		medikationsplanXml2PdfFile(fileNameWithouSuffix, s);
 	        		
 	
-	                // break;
+	                break;
                 } catch (IOException | JAXBException | InterruptedException e) {
         			log.log(Level.SEVERE, "Could not convert Medikationsplan", e);
                 }
@@ -191,6 +230,14 @@ public class Word2Emp {
 
 		
 	}
+	static void writeAdditionalIngredientInfo() {
+		try (FileOutputStream out = new FileOutputStream(
+	            new File(SECRET_MEDICATIONS_PLANS_MEDIKAMENTE_UND_WIRKSTOFFE_ZU_PZN_XLSX))) {			
+			medication2pznWorkbook.write(out);
+		} catch (IOException e) {
+			log.log(Level.SEVERE, "Could not write file", e);
+		}
+	}
 	private static void medikationsplanXml2PdfFile(String fileNameWithouSuffix, String s)
 			throws IOException, InterruptedException {
 		HttpClient client = HttpClient.newBuilder().build();
@@ -201,8 +248,13 @@ public class Word2Emp {
 		        .POST(BodyPublishers.ofString(s))
 		        .build();
 
-		HttpResponse<?> response = client.send(request, BodyHandlers.ofFile(Paths.get(fileNameWithouSuffix+".pdf")));
-		log.info(""+response.statusCode());
+		HttpResponse<Path> response = client.send(request, BodyHandlers.ofFile(Paths.get(fileNameWithouSuffix+".pdf")));
+		log.info("Medication Plan Generation HTTP Status: "+response.statusCode());
+		if(response.statusCode() != 200) {
+			log.warning(Files.readString(response.body()));
+			
+		}
+		
 	}
 	private static String medikationsPlan2XmlString(MedikationsPlan medikationsPlan) throws JAXBException {
 		ByteArrayOutputStream stream = new ByteArrayOutputStream();
@@ -211,6 +263,7 @@ public class Word2Emp {
 		marshaller.marshal(medikationsPlan, stream);
 		
 		String s = new String(stream.toByteArray());
+		log.info(s);
 		return s;
 	}
 	private static MedikationsPlan createMedikationPlanForPath(Path entry)
@@ -325,6 +378,10 @@ public class Word2Emp {
             }
 
             medikation.setA(medicationText.replaceAll("[\\x{0}-\\x{8}]|[\\x{B}-\\x{C}]|[\\x{E}-\\x{1F}]|[\\x{D800}-\\x{DFFF}]|[\\x{FFFE}-\\x{FFFF}]", ""));
+            
+            String pzn = getPZNForIngredientString(medicationText);
+            
+            medikation.setPs(pzn);            
             if("Dauermedikation".equals(blockName)) {
 	            medikation.setFd(tableRow.getCell(2).text().replaceAll("[\\x{0}-\\x{8}]|[\\x{B}-\\x{C}]|[\\x{E}-\\x{1F}]|[\\x{D800}-\\x{DFFF}]|[\\x{FFFE}-\\x{FFFF}]", ""));
 	            medikation.setM(tableRow.getCell(3).text().replaceAll("[\\x{0}-\\x{8}]|[\\x{B}-\\x{C}]|[\\x{E}-\\x{1F}]|[\\x{D800}-\\x{DFFF}]|[\\x{FFFE}-\\x{FFFF}]", ""));
@@ -351,10 +408,70 @@ public class Word2Emp {
     }
 	
         
-    private static GregorianCalendar dateToCalendar(Date date) {
+    private static String getPZNForIngredientString(String medicationText) {
+		return medication2pznSheet.getRow(medicationText2Row.get(medicationText)).getCell(1).getStringCellValue();
+	}
 
+	public static String loadPZNForIngredientString(Ingredient ingredient) {
+    
+    	HttpClient client = HttpClient.newBuilder().build();
+		HttpRequest request = HttpRequest.newBuilder()
+		        .uri(URI.create("https://medication.med-united.health/ajax/search/drugs/auto/?query="+URLEncoder.encode(ingredient.ingredient, Charset.defaultCharset())))
+		        .header("Content-Type", "application/xml; charset=UTF-8")
+		        .header("Accept", "application/pdf")
+		        .GET()
+		        .build();
+
+		HttpResponse<String> response;
+		try {
+			response = client.send(request, BodyHandlers.ofString());
+			log.info("Medication PZN search status code: "+response.statusCode());
+			if(response.statusCode() == 200) {
+				JsonObject responseResult = Json.createReader(new StringReader(response.body())).readObject();
+				JsonArray results = responseResult.getJsonArray("results");
+				if(results.size() > 0) {
+					for(JsonObject pznObject : results.getValuesAs(JsonObject.class)) {
+						if(pznObject.getJsonArray("activeIngredients").size() > 0 && pznObject.getJsonArray("activeIngredients").getJsonObject(0).getString("amount").startsWith(ingredient.ingredient)) {
+							String pzn = pznObject.getString("pzn");
+							log.info("PZN: "+pzn+" for: "+ingredient.medicationText);
+							return pzn;
+						}
+					}
+				}
+			}
+		} catch (IOException | InterruptedException e) {
+			log.log(Level.WARNING, "Could not search medication", e);
+		}
+		log.warning("Could not find PZN for: "+ingredient.medicationText);
+		return null;
+	}
+
+	private static GregorianCalendar dateToCalendar(Date date) {
 		Calendar calendar = Calendar.getInstance();
 		calendar.setTime(date);
 		return (GregorianCalendar) calendar;
+	}
+	static class Ingredient {
+		static Pattern INGREDIENT_TEXT = Pattern.compile(" *([^ ]+) +(\\d+(,\\d+)?) ?([^ ]+).*", Pattern.DOTALL);
+		String medicationText = "";
+		String ingredient = "";
+		double dosage;
+		String unit = "";
+		public Ingredient(String medicationText) {
+			this.medicationText = medicationText;
+			Matcher m = INGREDIENT_TEXT.matcher(this.medicationText);
+			if(m.matches()) {
+				ingredient = m.group(1);
+				dosage = Double.parseDouble(m.group(2).replace(",", "."));
+				unit = m.group(4);
+				log.info(toString());
+			} else {
+				ingredient = medicationText.split(" ")[0];
+				log.warning(medicationText+" does not match");
+			}
+		}
+		public String toString() {
+			return "MedicationText: "+medicationText+" Ingredient: "+ingredient+" Dosage: "+dosage+" Unit: "+unit;
+		}
 	}
 }
