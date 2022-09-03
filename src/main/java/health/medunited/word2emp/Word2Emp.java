@@ -116,14 +116,14 @@ public class Word2Emp {
 	                
 	                medikationsPlaene.add(medikationsPlan);
 	
-	        		String s = medikationsPlan2XmlString(medikationsPlan);
+	        		//String s = medikationsPlan2XmlString(medikationsPlan);
 	        		
-					Files.write(Paths.get(fileNameWithouSuffix+".xml"), s.getBytes());
-	        		log.info(s);
-	        		medikationsplanXml2PdfFile(fileNameWithouSuffix, s);
+					//Files.write(Paths.get(fileNameWithouSuffix+".xml"), s.getBytes());
+	        		//log.info(s);
+	        		//medikationsplanXml2PdfFile(fileNameWithouSuffix, s);
 	        		
 	
-	                break;
+	                //break;
                 } catch (IOException | JAXBException | InterruptedException e) {
         			log.log(Level.SEVERE, "Could not convert Medikationsplan", e);
                 }
@@ -156,6 +156,8 @@ public class Word2Emp {
         cell.setCellValue("Patient-Geburtsdatum");
         cell = row.createCell(cellid++);
         cell.setCellValue("Wirkstoff");
+        cell = row.createCell(cellid++);
+        cell.setCellValue("PZN");
         cell = row.createCell(cellid++);
         cell.setCellValue("Morgens");
         cell = row.createCell(cellid++);
@@ -199,6 +201,8 @@ public class Word2Emp {
 					}
         	        cell = row.createCell(cellid++);
         	        cell.setCellValue(meTyp.getA());
+        	        cell = row.createCell(cellid++);
+        	        cell.setCellValue(meTyp.getPs());
         	        cell = row.createCell(cellid++);
         	        cell.setCellValue(meTyp.getM());
         	        cell = row.createCell(cellid++);
@@ -379,7 +383,7 @@ public class Word2Emp {
 
             medikation.setA(medicationText.replaceAll("[\\x{0}-\\x{8}]|[\\x{B}-\\x{C}]|[\\x{E}-\\x{1F}]|[\\x{D800}-\\x{DFFF}]|[\\x{FFFE}-\\x{FFFF}]", ""));
             
-            String pzn = getPZNForIngredientString(medicationText);
+            String pzn = loadPZNForIngredientString(medicationText);
             
             medikation.setPs(pzn);            
             if("Dauermedikation".equals(blockName)) {
@@ -409,7 +413,15 @@ public class Word2Emp {
 	
         
     private static String getPZNForIngredientString(String medicationText) {
-		return medication2pznSheet.getRow(medicationText2Row.get(medicationText)).getCell(1).getStringCellValue();
+    	Integer rowNum = medicationText2Row.get(medicationText);
+    	if(rowNum != null) {
+    		return medication2pznSheet.getRow(rowNum).getCell(1).getStringCellValue();
+    	}
+    	return null;
+	}
+
+	public static String loadPZNForIngredientString(String ingredient) {
+		return loadPZNForIngredientString(new Ingredient(ingredient));
 	}
 
 	public static String loadPZNForIngredientString(Ingredient ingredient) {
@@ -429,12 +441,15 @@ public class Word2Emp {
 			if(response.statusCode() == 200) {
 				JsonObject responseResult = Json.createReader(new StringReader(response.body())).readObject();
 				JsonArray results = responseResult.getJsonArray("results");
-				if(results.size() > 0) {
+				if(results != null && results.size() > 0) {
 					for(JsonObject pznObject : results.getValuesAs(JsonObject.class)) {
-						if(pznObject.getJsonArray("activeIngredients").size() > 0 && pznObject.getJsonArray("activeIngredients").getJsonObject(0).getString("amount").startsWith(ingredient.ingredient)) {
-							String pzn = pznObject.getString("pzn");
-							log.info("PZN: "+pzn+" for: "+ingredient.medicationText);
-							return pzn;
+						if(pznObject.getJsonArray("activeIngredients").size() > 0) {
+							String amount = pznObject.getJsonArray("activeIngredients").getJsonObject(0).getString("amount");
+							if(amount != null && ingredient.dosage != null && amount.startsWith(ingredient.dosage)) {
+								String pzn = pznObject.getString("pzn");
+								log.info("PZN: "+pzn+" for: "+ingredient.medicationText);
+								return pzn;
+							}
 						}
 					}
 				}
@@ -455,14 +470,14 @@ public class Word2Emp {
 		static Pattern INGREDIENT_TEXT = Pattern.compile(" *([^ ]+) +(\\d+(,\\d+)?) ?([^ ]+).*", Pattern.DOTALL);
 		String medicationText = "";
 		String ingredient = "";
-		double dosage;
+		String dosage;
 		String unit = "";
 		public Ingredient(String medicationText) {
 			this.medicationText = medicationText;
 			Matcher m = INGREDIENT_TEXT.matcher(this.medicationText);
 			if(m.matches()) {
 				ingredient = m.group(1);
-				dosage = Double.parseDouble(m.group(2).replace(",", "."));
+				dosage = m.group(2);
 				unit = m.group(4);
 				log.info(toString());
 			} else {
